@@ -1,29 +1,77 @@
 import hoshino
 import asyncio
-from .base import *
-from .config import get_config, get_group_config, set_group_config
+import json
+import os
+import traceback
+from datetime import datetime, timedelta
+from .base import get_setu, search_setu, fetch_process
+from .lolicon import lolicon_warehouse_state, warehouse_full
+from .config import get_config, get_group_config, set_group_config, set_config
 
 HELP_MSG = '''色图/来n张色图 : 随机获取1张/n张色图
-搜[n张]色图 keyword : 搜索指定关键字的色图,附带数量可以获取多张
-本日涩图排行榜 [page] : 获取p站排行榜(需开启acggov模块)
-看涩图 [n] 或 [start end] : 获取p站排行榜指定序号色图(需开启acggov模块)'''
-sv = hoshino.Service('setu_mix', bundle='pcr娱乐', help_=HELP_MSG)
+搜[n张]色图 keyword : 搜索指定关键字的色图,附带数量可以获取多张'''
+sv = hoshino.Service('涩涩-在线', bundle='pcr娱乐', help_=HELP_MSG)
 
 #设置limiter
 tlmt = hoshino.util.DailyNumberLimiter(get_config('base', 'daily_max'))
 flmt = hoshino.util.FreqLimiter(get_config('base', 'freq_limit'))
 
+LIMIT_FILE = os.path.join(os.path.dirname(__file__), 'limit_data.json')
+
+def _limiter_day():
+    # 与 DailyNumberLimiter.check 的口径一致: (北京时间 - 5小时).day
+    return (datetime.utcnow() + timedelta(hours=3)).day
+
+def load_limit_data():
+    try:
+        with open(LIMIT_FILE, encoding='utf8') as f:
+            d = json.load(f)
+        if d.get('day') != _limiter_day():
+            return
+        tlmt.today = d.get('day')
+        for k, v in d.get('count', {}).items():
+            tlmt.count[int(k)] = v
+        for k, v in d.get('freq', {}).items():
+            flmt.next_time[int(k)] = v
+        print('setu_mix 已恢复限流数据:', len(d.get('count', {})), 'users')
+    except:
+        pass
+
+def save_limit_data():
+    try:
+        d = {
+            'day': tlmt.today,
+            'count': {str(k): v for k, v in tlmt.count.items()},
+            'freq': {str(k): v for k, v in flmt.next_time.items()},
+        }
+        tmp = LIMIT_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf8') as f:
+            json.dump(d, f)
+        os.replace(tmp, LIMIT_FILE)
+    except:
+        traceback.print_exc()
+
+load_limit_data()
+
+def _bot_nickname():
+    nick = getattr(hoshino.config, 'NICKNAME', None)
+    if isinstance(nick, (list, tuple)) and nick:
+        return str(nick[0])
+    if isinstance(nick, str) and nick:
+        return nick
+    return '我'
+
 def check_lmt(uid, num):
     if uid in hoshino.config.SUPERUSERS:
         return 0, ''
     if not tlmt.check(uid):
-        return 1, f"您今天已经冲过{get_config('base', 'daily_max')}次了,请明天再来!"
+        return 1, f"您今天已经冲过{get_config('base', 'daily_max')}次了哦！{_bot_nickname()}不喜欢涩涩的家伙。"
     if num > 1 and (get_config('base', 'daily_max') - tlmt.get_num(uid)) < num:
-            return 1, f"您今天的剩余次数为{get_config('base', 'daily_max') - tlmt.get_num(uid)}次,已不足{num}次,请节制!"
+            return 1, f"今天只许再冲{get_config('base', 'daily_max') - tlmt.get_num(uid)}次了哦,请节制!"
     if not flmt.check(uid):
         return 1, f'您冲的太快了,请等待{round(flmt.left_time(uid))}秒!'
-    #tlmt.increase(uid,num)
     flmt.start_cd(uid)
+    save_limit_data()
     return 0, ''
 
 @sv.on_prefix('setu')
@@ -31,28 +79,27 @@ async def send_setu(bot, ev):
     uid = ev['user_id']
     gid = ev['group_id']
     is_su = hoshino.priv.check_priv(ev, hoshino.priv.SUPERUSER)
+    is_admin = is_su or hoshino.priv.check_priv(ev, hoshino.priv.ADMIN)
     args = ev.message.extract_plain_text().split()
 
     msg = ''
-    if not is_su:
-        msg = '需要超级用户权限'
+    if not is_admin:
+        msg = '需要群管理员权限'
     elif len(args) == 0:
         msg = 'invalid parameter'
     elif args[0] == 'set' and len(args) >= 3: #setu set module on [group]
-        if len(args) >= 4 and args[3].isdigit():
-            gid = int(args[3])
+        if is_su and len(args) >= 4 and args[3].isdigit():
+            gid = int(args[3]) #指定群号仅限超级用户, 管理员只能管理本群
         key = None
         value = False
         if args[1] == 'lolicon':
             key = 'lolicon'
         elif args[1] == 'lolicon_r18':
             key = 'lolicon_r18'
-        elif args[1] == 'acggov':
-            key = 'acggov'
         elif args[1] == 'withdraw':
             key = 'withdraw'
-        elif args[1] == 'xml':
-            key = 'xml'
+        elif args[1] == 'maxsize':
+            key = 'maxsize'
         if args[2] == 'on' or args[2] == 'true':
             value = True
         elif args[2] == 'off' or args[2] == 'false':
@@ -60,28 +107,54 @@ async def send_setu(bot, ev):
         elif args[2].isdigit():
             value = int(args[2])
         if key:
-            set_group_config(gid, key, value)
-            msg = f'{gid} : {key} = {value}'
+            if key == 'maxsize':
+                if not is_su:
+                    msg = 'maxsize 需要超级用户权限'
+                elif args[2].isdigit():
+                    set_config('base', 'max_size_mb', int(args[2]))
+                    msg = f'图库容量上限已设为 {args[2]} MB'
+                    if int(args[2]) <= 0:
+                        msg += '（已停止api抓图）'
+                else:
+                    msg = 'invalid parameter, maxsize需要为整数MB'
+            elif key == 'withdraw' and value == 10: #一键r18
+                set_group_config(gid, key, value)
+                set_group_config(gid, 'lolicon_r18', True)
+                msg = f'{gid}已一键设置r18'
+            elif key == 'withdraw' and value == 0:
+                set_group_config(gid, key, value)
+                set_group_config(gid, 'lolicon_r18', False)
+                msg = f'{gid}已一键禁用r18'
+            else:
+                set_group_config(gid, key, value)
+                msg = f'{gid} : {key} = {value}'
         else:
             msg = 'invalid parameter'
     elif args[0] == 'get':
-        if len(args) >= 2 and args[1].isdigit():
+        if is_su and len(args) >= 2 and args[1].isdigit():
             gid = int(args[1])
         msg = f'group {gid} :'
         msg += f'\nwithdraw : {get_group_config(gid, "withdraw")}'
-        msg += f'\nxml : {get_group_config(gid, "xml")}'
         msg += f'\nlolicon : {get_group_config(gid, "lolicon")}'
         msg += f'\nlolicon_r18 : {get_group_config(gid, "lolicon_r18")}'
-        msg += f'\nacggov : {get_group_config(gid, "acggov")}'
     elif args[0] == 'fetch':
-        await bot.send(ev, 'start fetch mission')
-        await fetch_process()
-        msg = 'fetch mission complete'
+        if get_config('lolicon', 'mode') != 2:
+            msg = '当前lolicon不在mode 2, 无需抓取'
+        else:
+            await bot.send(ev, 'start fetch mission')
+            errors = await fetch_process()
+            if errors:
+                msg = 'fetch 部分失败:\n' + '\n'.join(errors)
+            else:
+                msg = 'fetch mission complete'
     elif args[0] == 'warehouse':
+        detail, total = lolicon_warehouse_state()
+        limit_mb = get_config('base', 'max_size_mb')
         msg = 'warehouse:'
-        state = check_path()
-        for k, v in state.items():
-            msg += f'\n{k} : {v}'
+        for k, v in detail.items():
+            msg += f'\n{k} : {v["count"]}张 / {v["bytes"]/1024/1024:.1f}MB'
+        msg += f'\ntotal : {total/1024/1024:.1f}MB / 上限 {limit_mb}MB'
+        msg += '\n状态: ' + ('已满, 已停止api抓图' if warehouse_full() else '未满')
     else:
         msg = 'invalid parameter'
     await bot.send(ev, msg)
@@ -94,6 +167,9 @@ async def send_random_setu(bot, ev):
         num = int(match.group(1))
     except:
         pass
+    if num > 5:
+        num = 5
+        await bot.send(ev, '一次不能太贪心哦！')
     uid = ev['user_id']
     gid = ev['group_id']
     result, msg = check_lmt(uid, num)
@@ -113,7 +189,11 @@ async def send_random_setu(bot, ev):
             print('图片发送失败')
         await asyncio.sleep(1)
 
+    if not result_list:
+        await bot.send(ev, '图片发送失败, 请稍后再试')
+        return
     tlmt.increase(uid, len(result_list))
+    save_limit_data()
 
     second = get_group_config(gid, "withdraw")
     if second and second > 0:
@@ -146,9 +226,18 @@ async def send_search_setu(bot, ev):
         return
 
     await bot.send(ev, '正在搜索...')
-    msg_list = await search_setu(gid, keyword, num)
+    try:
+        msg_list = await search_setu(gid, keyword, num)
+    except Exception:
+        traceback.print_exc()
+        await bot.send(ev, '搜索失败, 请稍后再试')
+        return
+    if msg_list is None:
+        await bot.send(ev, '无可用模块')
+        return
     if len(msg_list) == 0:
         await bot.send(ev, '无结果')
+        return
     result_list = []
     for msg in msg_list:
         try:
@@ -156,64 +245,11 @@ async def send_search_setu(bot, ev):
         except:
             print('图片发送失败')
         await asyncio.sleep(1)
-    tlmt.increase(uid, len(result_list))
-    second = get_group_config(gid, "withdraw")
-    if second and second > 0:
-        await asyncio.sleep(second)
-        for result in result_list:
-            try:
-                await bot.delete_msg(self_id=ev['self_id'], message_id=result['message_id'])
-            except:
-                print('撤回失败')
-            await asyncio.sleep(1)
-            
-@sv.on_rex(r'([本每]日)?[涩色瑟]图排行榜\D*(\d*)')
-async def send_ranking(bot, ev):
-    gid = ev['group_id']
-    page = ev['match'].group(2)
-    if page and page.isdigit():
-        page = int(page)
-        page -= 1
-    else:
-        page = 0
-    if page < 0:
-        page = 0
-    msg = await get_ranking(gid, page)
-    if msg == None:
-        msg = '模块未启用'
-    await bot.send(ev, msg)
-
-@sv.on_prefix(('看涩图', '看色图', '看瑟图'))
-async def send_ranking_setu(bot, ev):
-    uid = ev['user_id']
-    gid = ev['group_id']
-    start = 0
-    end = 0
-    args = ev.message.extract_plain_text().split()
-    if len(args) > 0 and args[0].isdigit():
-        start = int(args[0])
-        start -= 1
-        if start < 0:
-            start = 0
-        end = start + 1
-    if len(args) > 1 and args[1].isdigit():
-        end = int(args[1])
-    result, msg = check_lmt(uid, end - start)
-    if result != 0:
-        await bot.send(ev, msg)
+    if not result_list:
+        await bot.send(ev, '图片全部发送失败, 可能图片过大或网络异常, 请稍后再试')
         return
-    result_list = []
-    for i in range(start, end):
-        msg = await get_ranking_setu(gid, i)
-        if msg == None:
-            await bot.send(ev, '模块未启用')
-            return
-        try:
-            result_list.append(await bot.send(ev, msg))
-        except:
-            print('图片发送失败')
-        await asyncio.sleep(1)
     tlmt.increase(uid, len(result_list))
+    save_limit_data()
     second = get_group_config(gid, "withdraw")
     if second and second > 0:
         await asyncio.sleep(second)

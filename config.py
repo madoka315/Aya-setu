@@ -4,38 +4,24 @@ import traceback
 
 config = {
     "base": {
-        "daily_max": 10,
+        "daily_max": 2,
         "freq_limit": 10,
+        "max_size_mb": 500,
     },
     "default": {
         "withdraw" : 0,
         "lolicon": True,
         "lolicon_r18": False,
-        "acggov": False,
-        "xml": False,
     },
     "lolicon": {
         "mode": 1,
-        "apikey": "",
         "r18": True,
         "use_thumb": True,
         "pixiv_direct": False,
         "pixiv_proxy": "",
-    },
-    "acggov": {
-        # 0禁用 1无缓存 2有缓存在线 3有缓存离线
-        "mode": 1,
-        "apikey": "",
-        "ranking_mode": "daily",
-        "per_page": 25,
-        "use_thumb": True,
-        "pixiv_direct": False,
-        "acggov_proxy": "",
-        "pixiv_proxy": "",
     }
 }
 
-# 源 0 关闭 1 lolicon 2 acggov 3 组合
 # lolicon_r18 0 非18 1 纯r18 2 混合
 group_config = {}
 
@@ -43,6 +29,21 @@ def get_config(key, sub_key):
     if key in config and sub_key in config[key]:
         return config[key][sub_key]
     return None
+
+def set_config(key, sub_key, value):
+    if key not in config:
+        return False
+    config[key][sub_key] = value
+    save_config()
+    return True
+
+def save_config():
+    path = os.path.join(os.path.dirname(__file__), 'config.json')
+    try:
+        with open(path, 'w', encoding='utf8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=4)
+    except:
+        traceback.print_exc()
 
 def load_config():
     path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -54,9 +55,6 @@ def load_config():
             if 'base' in d:
                 for k, v in d['base'].items():
                     config['base'][k] = v
-            if 'acggov' in d:
-                for k, v in d['acggov'].items():
-                    config['acggov'][k] = v
             if 'lolicon' in d:
                 for k, v in d['lolicon'].items():
                     config['lolicon'][k] = v
