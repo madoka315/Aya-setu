@@ -1,4 +1,4 @@
-# setu_mix
+# Aya-setu_mix
 
 基于HoshinoBot v2的涩图插件, 从 [lolicon.app](https://lolicon.app/) 获取图片.
 
