@@ -5,7 +5,7 @@ import os
 import traceback
 from datetime import datetime, timedelta
 from .base import get_setu, search_setu, fetch_process
-from .lolicon import lolicon_warehouse_state, warehouse_full
+from .lolicon import lolicon_warehouse_state, warehouse_full, SetuApiError
 from .config import get_config, get_group_config, set_group_config, set_config
 
 HELP_MSG = '''色图/来n张色图 : 随机获取1张/n张色图
@@ -228,9 +228,12 @@ async def send_search_setu(bot, ev):
     await bot.send(ev, '正在搜索...')
     try:
         msg_list = await search_setu(gid, keyword, num)
+    except SetuApiError as e:
+        await bot.send(ev, f'[CQ:reply,id={ev["message_id"]}]{e}')
+        return
     except Exception:
         traceback.print_exc()
-        await bot.send(ev, '搜索失败, 请稍后再试')
+        await bot.send(ev, f'[CQ:reply,id={ev["message_id"]}]搜索失败, 请稍后重试')
         return
     if msg_list is None:
         await bot.send(ev, '无可用模块')
@@ -246,7 +249,7 @@ async def send_search_setu(bot, ev):
             print('图片发送失败')
         await asyncio.sleep(1)
     if not result_list:
-        await bot.send(ev, '图片全部发送失败, 可能图片过大或网络异常, 请稍后再试')
+        await bot.send(ev, f'[CQ:reply,id={ev["message_id"]}]图片发送失败, 请稍后再试')
         return
     tlmt.increase(uid, len(result_list))
     save_limit_data()

@@ -17,7 +17,7 @@ API_TIMEOUT = aiohttp.ClientTimeout(total=15)
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=60)
 
 class SetuApiError(Exception):
-    '''api请求失败/配额受限/下载全失败, 与"搜索无结果"相区分'''
+    '''搜索失败类错误(超时/配额/下载全失败/图库满), message 直接作为面向用户的回复'''
     pass
 
 SUB_DIRS = ('lolicon', 'lolicon_r18')
@@ -151,15 +151,16 @@ async def query_setu(r18 = 0, keyword=None):
     global quota_limit_time
     image_list = []
     if datetime.datetime.now() < quota_limit_time:
-        raise SetuApiError(f'lolicon api 已达调用额度上限, 稍后自动恢复')
+        wait_min = max(1, round((quota_limit_time - datetime.datetime.now()).total_seconds() / 60))
+        raise SetuApiError(f'搜索失败, 频率太高啦, 请约{wait_min}分钟后重试')
     if get_config('lolicon', 'mode') == 2 and warehouse_full():
         if not evict_warehouse():
-            raise SetuApiError('图库已满且无法腾出空间, 已停止api抓图')
+            raise SetuApiError('搜索失败, 图库已满')
 
     url = 'https://api.lolicon.app/setu'
     params = {
         'r18': r18,
-        'num': 10,
+        'num': 20,
         }
     if keyword:
         params['keyword'] = keyword
@@ -173,15 +174,17 @@ async def query_setu(r18 = 0, keyword=None):
             async with session.get(url, params=params) as resp:
                 data = await resp.json(content_type='application/json')
     except Exception as e:
-        raise SetuApiError(f'lolicon api 请求失败: {e!r}') from None
+        print('lolicon api request failed:', e)
+        raise SetuApiError('搜索超时, 请稍后重试') from None
     if 'code' not in data:
-        raise SetuApiError('lolicon api 返回数据无效')
+        raise SetuApiError('搜索超时, 请稍后重试')
     if data['code'] != 0:
         if data['code'] == 429:
             ttl = data.get('quota_min_ttl') or 600
             quota_limit_time = datetime.datetime.now() + datetime.timedelta(seconds=ttl)
-            raise SetuApiError(f'lolicon api 已达调用额度上限, 约{ttl // 60}分钟后恢复')
-        raise SetuApiError(f'lolicon api error {data["code"]}: {data.get("msg", "")}')
+            raise SetuApiError(f'搜索失败, 频率太高啦, 请约{max(1, ttl // 60)}分钟后重试')
+        print('lolicon api error code:', data['code'], ',msg:', data.get('msg', ''))
+        raise SetuApiError('搜索超时, 请稍后重试')
     for item in data['data']:
         image = generate_image_struct()
         image['id'] = item['pid']
@@ -253,13 +256,23 @@ def save_image(image):
         json.dump(info, f, ensure_ascii=False, indent=2)
     _usage_cache['ts'] = 0
 
+def _cached(image):
+    path = f'setu_mix/lolicon/{image["id"]}.jpg'
+    if image['r18']:
+        path = f'setu_mix/lolicon_r18/{image["id"]}.jpg'
+    return os.path.exists(R.img(path).path)
+
 async def get_setu_online(num, r18 = 0, keyword = None):
     image_list = await query_setu(r18 = r18, keyword = keyword)
     valid_list = []
     had_result = len(image_list) > 0
 
+    #打乱后优先取本地未缓存的: 同一关键词多次搜索轮流发新图, 减少重复
+    random.shuffle(image_list)
+    image_list.sort(key=_cached)
+
     while len(image_list) > 0:
-        image = image_list.pop(random.randint(0, len(image_list) - 1))
+        image = image_list.pop(0)
         #检查本地是否存在该图片
         path = f'setu_mix/lolicon/{image["id"]}.jpg'
         if image['r18']:
@@ -282,7 +295,7 @@ async def get_setu_online(num, r18 = 0, keyword = None):
         if len(valid_list) >= num:
             break
     if had_result and len(valid_list) == 0:
-        raise SetuApiError('图片下载失败')
+        raise SetuApiError('图片下载失败, 请稍后再试')
     return valid_list
 
 def get_setu_native(r18 = 0, uid = 0):
