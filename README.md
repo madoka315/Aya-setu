@@ -1,8 +1,8 @@
-# Aya-setu_mix
+# Aya-setu
 
 基于HoshinoBot v2的涩图插件, 从 [lolicon.app](https://lolicon.app/) 获取图片.
 
-本项目地址 https://github.com/madoka315/Aya-setu_mix
+本项目地址 https://github.com/madoka315/Aya-setu
 
 本插件基于 https://github.com/zyujs/setu_mix 修改: 移除了已失效的 acggov(acgmx) 图源及排行榜功能、卡片涩图功能和 apikey 配置, 新增了图库容量上限与限流持久化.
 
